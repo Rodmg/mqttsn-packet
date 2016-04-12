@@ -207,7 +207,7 @@ Parser.prototype._parseGWInfo = function parserParseGWInfo() {
 };
 
 Parser.prototype._parseConnect = function parserParseConnect() {
-  if (this.packet.length < 5) {
+  if (this.packet.length < 4) {
     return this.emit('error', new Error('packet too short'));
   }
   
@@ -216,6 +216,10 @@ Parser.prototype._parseConnect = function parserParseConnect() {
     return this.emit('error', new Error('unsupported protocol ID'));
   }
   this.packet.duration = this._list.readUInt16BE(2);
+  if (this.packet.length < 5) {
+    if(this.packet.cleanSession) return; // Allow blank client id according to standard
+    else this.emit('error', new Error('cannot read client ID'));
+  }
   this.packet.clientId = this._list.toString('utf8', 4, this.packet.length);
   if (this.packet.clientId === null) {
     this.emit('error', new Error('cannot read client ID'));
