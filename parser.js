@@ -23,6 +23,8 @@ function Parser(opts) {
   ];
   this._stateCounter = 0;
   this._isClient = opts.isClient || false;
+
+  this.finishedPacket = null;
 }
 
 inherits(Parser, EE);
@@ -31,20 +33,24 @@ Parser.prototype.parse = function parserParse(buf) {
   this._list.append(buf);
 
   while ((this.packet.length === 0 || this._list.length > 0) &&
-         this[this._states[this._stateCounter]]()) {
+          this[this._states[this._stateCounter]]()) 
+  {
     this._stateCounter += 1;
 
-    if (this._stateCounter >= this._states.length) {
+    if (this._stateCounter >= this._states.length)
+    {
       this._stateCounter = 0;
     }
   }
-  return this._list.length;
+  //return this._list.length;
+  return this.finishedPacket;
 };
 
 Parser.prototype._newPacket = function parserNewPacket() {
   if (this.packet) {
     this._list.consume(this.packet.length);
     delete this.packet.length;
+    this.finishedPacket = this.packet;
     this.emit('packet', this.packet);
   }
 
