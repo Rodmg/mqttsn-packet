@@ -1,7 +1,6 @@
 'use strict';
 
-var bl        = require('bl'),
-    inherits  = require('util').inherits,
+var inherits  = require('util').inherits,
     EE        = require('events').EventEmitter,
     Packet    = require('./packet'),
     constants = require('./constants');
@@ -13,50 +12,24 @@ function Parser(opts) {
   
   opts = opts || {};
 
-  this._list = bl();
-  this._newPacket();
+  this.buffer = null;
+  this.packet = null;
 
-  this._states = [
-    '_parseHeader',
-    '_parsePayload',
-    '_newPacket'
-  ];
-  this._stateCounter = 0;
   this._isClient = opts.isClient || false;
 
-  this.finishedPacket = null;
 }
 
 inherits(Parser, EE);
 
 Parser.prototype.parse = function parserParse(buf) {
-  this._list.append(buf);
-
-  while ((this.packet.length === 0 || this._list.length > 0) &&
-          this[this._states[this._stateCounter]]()) 
-  {
-    this._stateCounter += 1;
-
-    if (this._stateCounter >= this._states.length)
-    {
-      this._stateCounter = 0;
-    }
-  }
-  //return this._list.length;
-  return this.finishedPacket;
-};
-
-Parser.prototype._newPacket = function parserNewPacket() {
-  if (this.packet) {
-    this._list.consume(this.packet.length);
-    delete this.packet.length;
-    this.finishedPacket = this.packet;
-    this.emit('packet', this.packet);
-  }
+  this.buffer = buf;
 
   this.packet = new Packet();
 
-  return true;
+  if(!this._parseHeader()) return null;
+  if(!this._parsePayload()) return null;
+
+  return this.packet;
 };
 
 Parser.prototype._parseHeader = function parserParseHeader() {
@@ -68,26 +41,26 @@ Parser.prototype._parseHeader = function parserParseHeader() {
   this.packet.length = header.length;
   this.packet.cmd = constants.types[header.cmdCode];
 
-  this._list.consume(header.headerLength);
+  this.buffer = this.buffer.slice(header.headerLength);
 
   return true;
 };
 
 Parser.prototype._parseHeaderInternal = function parserParseHeaderInternal(pos) {
-  var length = this._list.readUInt8(pos),
+  var length = this.buffer.readUInt8(pos),
       cmdCodeOffset = 1;
   if (length === 0x01) {
-    if (this._list.length < (pos + 4)) {
+    if (this.buffer.length < (pos + 4)) {
       return null;
     }
     
-    length = this._list.readUInt16BE(pos + 1);
+    length = this.buffer.readUInt16BE(pos + 1);
     cmdCodeOffset = 3;
-  } else if (this._list.length < 2) {
+  } else if (this.buffer.length < 2) {
     return null;
   }
   
-  var cmdCode = this._list.readUInt8(pos + cmdCodeOffset);
+  var cmdCode = this.buffer.readUInt8(pos + cmdCodeOffset);
   return {
     length: length - (cmdCodeOffset + 1),
     headerLength: cmdCodeOffset + 1,
@@ -99,65 +72,65 @@ Parser.prototype._parsePayload = function parserParsePayload() {
   var result = false;
   
   if ((this.packet.length === 0) ||
-      (this._list.length >= this.packet.length)) {
+      (this.buffer.length >= this.packet.length)) {
     
     if (this.packet.cmd !== 'Encapsulated message') {
       switch (this.packet.cmd) {
         case 'advertise':
-          this._parseAdvertise();
+          return this._parseAdvertise();
           break;
         case 'searchgw':
-          this._parseSearchGW();
+          return this._parseSearchGW();
           break;
         case 'gwinfo':
-          this._parseGWInfo();
+          return this._parseGWInfo();
           break;
         case 'connect':
-          this._parseConnect();
+          return this._parseConnect();
           break;
         case 'connack':
         case 'willtopicresp':
         case 'willmsgresp':
-          this._parseRespReturnCode();
+          return this._parseRespReturnCode();
           break;
         case 'willtopicupd':
         case 'willtopic':
-          this._parseWillTopic();
+          return this._parseWillTopic();
           break;
         case 'willmsg':
         case 'willmsgupd':
-          this._parseWillMsg();
+          return this._parseWillMsg();
           break;
         case 'register':
-          this._parseRegister();
+          return this._parseRegister();
           break;
         case 'regack':
-          this._parseRegAck();
+          return this._parseRegAck();
           break;
         case 'publish':
-          this._parsePublish();
+          return this._parsePublish();
           break;
         case 'puback':
-          this._parsePubAck();
+          return this._parsePubAck();
           break;
         case 'pubcomp':
         case 'pubrec':
         case 'pubrel':
         case 'unsuback':
-          this._parseMsgId();
+          return this._parseMsgId();
           break;
         case 'unsubscribe':
         case 'subscribe':
-          this._parseSubscribeUnsubscribe();
+          return this._parseSubscribeUnsubscribe();
           break;
         case 'suback':
-          this._parseSubAck();
+          return this._parseSubAck();
           break;
         case 'pingreq':
-          this._parsePingReq();
+          return this._parsePingReq();
           break;
         case 'disconnect':
-          this._parseDisconnect();
+          return this._parseDisconnect();
           break;
         case 'willtopicreq':
         case 'willmsgreq':
@@ -166,6 +139,7 @@ Parser.prototype._parsePayload = function parserParsePayload() {
           break;
         default:
           this.emit('error', new Error('command not supported'));
+          return false;
       }
 
       result = true;
@@ -179,182 +153,217 @@ Parser.prototype._parsePayload = function parserParsePayload() {
 
 Parser.prototype._parseAdvertise = function parserParseAdvertise() {
   if (this.packet.length !== 3) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  this.packet.gwId = this._list.readUInt8(0);
-  this.packet.duration = this._list.readUInt16BE(1);
+  this.packet.gwId = this.buffer.readUInt8(0);
+  this.packet.duration = this.buffer.readUInt16BE(1);
+  return true;
 };
 
 Parser.prototype._parseSearchGW = function parserParseSearchGW() {
   if (this.packet.length !== 1) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  this.packet.radius = this._list.readUInt8(0);
+  this.packet.radius = this.buffer.readUInt8(0);
+  return true;
 };
 
 Parser.prototype._parseGWInfo = function parserParseGWInfo() {
   if ((this._isClient && (this.packet.length < 2)) ||
       (!this._isClient && (this.packet.length !== 1))) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  this.packet.gwId = this._list.readUInt8(0);
+  this.packet.gwId = this.buffer.readUInt8(0);
   
   if (this._isClient) {
-    var addLen = this._list.readUInt8(1);
+    var addLen = this.buffer.readUInt8(1);
     if (this.packet.length !== (2 + addLen)) {
-      return this.emit('error', new Error('wrong packet length'));
+      this.emit('error', new Error('wrong packet length'));
+      return false;
     }
     
-    this.packet.gwAdd = this._list.slice(2, this.packet.length);
-  }  
+    this.packet.gwAdd = this.buffer.slice(2, this.packet.length);
+  }
+  return true;  
 };
 
 Parser.prototype._parseConnect = function parserParseConnect() {
   if (this.packet.length < 4) {
-    return this.emit('error', new Error('packet too short'));
+    this.emit('error', new Error('packet too short'));
+    return false;
   }
   
-  if (!this._parseFlags(this._list.readUInt8(0))) { return; }
-  if (this._list.readUInt8(1) !== constants.ID) {
-    return this.emit('error', new Error('unsupported protocol ID'));
+  if (!this._parseFlags(this.buffer.readUInt8(0))) { return true; }
+  if (this.buffer.readUInt8(1) !== constants.ID) {
+    this.emit('error', new Error('unsupported protocol ID'));
+    return false;
   }
-  this.packet.duration = this._list.readUInt16BE(2);
+  this.packet.duration = this.buffer.readUInt16BE(2);
   if (this.packet.length < 5) {
-    if(this.packet.cleanSession) return; // Allow blank client id according to standard
-    else this.emit('error', new Error('cannot read client ID'));
+    if(this.packet.cleanSession) return true; // Allow blank client id according to standard
+    else { this.emit('error', new Error('cannot read client ID')); return false; }
   }
-  this.packet.clientId = this._list.toString('utf8', 4, this.packet.length);
+  this.packet.clientId = this.buffer.toString('utf8', 4, this.packet.length);
   if (this.packet.clientId === null) {
     this.emit('error', new Error('cannot read client ID'));
+    return false;
   }
+  return true;
 };
 
 Parser.prototype._parseRespReturnCode = function parserParseRespReturnCode() {
   if (this.packet.length !== 1) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  this.packet.returnCode = this._parseReturnCode(this._list.readUInt8(0));
+  this.packet.returnCode = this._parseReturnCode(this.buffer.readUInt8(0));
+  return true;
 };
 
 Parser.prototype._parseWillTopic = function parserParseWillTopic() {
   if (this.packet.length !== 0) {
-    if (!this._parseFlags(this._list.readUInt8(0))) { return; }
-    this.packet.willTopic = this._list.toString('utf8', 1, this.packet.length);
+    if (!this._parseFlags(this.buffer.readUInt8(0))) { return true; }
+    this.packet.willTopic = this.buffer.toString('utf8', 1, this.packet.length);
   }
+  return true;
 };
 
 Parser.prototype._parseWillMsg = function parserParseWillMsg() {
-  this.packet.willMsg = this._list.toString('utf8', 0, this.packet.length);
+  this.packet.willMsg = this.buffer.toString('utf8', 0, this.packet.length);
+  return true;
 };
 
 Parser.prototype._parseRegister = function parserParseRegister() {
   if (this.packet.length < 4) {
-    return this.emit('error', new Error('packet too short'));
+    this.emit('error', new Error('packet too short'));
+    return false;
   }
   
-  this.packet.topicId = this._list.readUInt16BE(0);
-  this.packet.msgId = this._list.readUInt16BE(2);
-  this.packet.topicName = this._list.toString('utf8', 4, this.packet.length);
+  this.packet.topicId = this.buffer.readUInt16BE(0);
+  this.packet.msgId = this.buffer.readUInt16BE(2);
+  this.packet.topicName = this.buffer.toString('utf8', 4, this.packet.length);
+  return true;
 };
 
 Parser.prototype._parseRegAck = function parserParseRegAck() {
   if (this.packet.length !== 5) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  this.packet.topicId = this._list.readUInt16BE(0);
-  this.packet.msgId = this._list.readUInt16BE(2);
-  this.packet.returnCode = this._parseReturnCode(this._list.readUInt8(4));
+  this.packet.topicId = this.buffer.readUInt16BE(0);
+  this.packet.msgId = this.buffer.readUInt16BE(2);
+  this.packet.returnCode = this._parseReturnCode(this.buffer.readUInt8(4));
+  return true;
 };
 
 Parser.prototype._parsePublish = function parserParsePublish() {
   if (this.packet.length < 5) {
-    return this.emit('error', new Error('packet too short'));
+    this.emit('error', new Error('packet too short'));
+    return false;
   }
   
-  if (!this._parseFlags(this._list.readUInt8(0))) { return; }
+  if (!this._parseFlags(this.buffer.readUInt8(0))) { return true; }
   if (this.packet.topicIdType === 'short topic') {
-    this.packet.topicId = this._list.toString('utf8', 1, 3);
+    this.packet.topicId = this.buffer.toString('utf8', 1, 3);
   } else {
-    this.packet.topicId = this._list.readUInt16BE(1);
+    this.packet.topicId = this.buffer.readUInt16BE(1);
   }
-  this.packet.msgId = this._list.readUInt16BE(3);
-  this.packet.payload = this._list.slice(5, this.packet.length);
+  this.packet.msgId = this.buffer.readUInt16BE(3);
+  this.packet.payload = this.buffer.slice(5, this.packet.length);
+  return true;
 };
 
 Parser.prototype._parsePubAck = function parserParsePubAck() {
   if (this.packet.length !== 5) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  this.packet.topicId = this._list.readUInt16BE(0);
-  this.packet.msgId = this._list.readUInt16BE(2);
-  this.packet.returnCode = this._parseReturnCode(this._list.readUInt8(4));
+  this.packet.topicId = this.buffer.readUInt16BE(0);
+  this.packet.msgId = this.buffer.readUInt16BE(2);
+  this.packet.returnCode = this._parseReturnCode(this.buffer.readUInt8(4));
+  return true;
 };
 
 Parser.prototype._parseMsgId = function parserParseMsgId() {
   if (this.packet.length !== 2) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  this.packet.msgId = this._list.readUInt16BE(0);
+  this.packet.msgId = this.buffer.readUInt16BE(0);
+  return true;
 };
 
 Parser.prototype._parseSubscribeUnsubscribe = function parserParseSubscribeUnsubscribe() {
   if (this.packet.length < 3) {
-    return this.emit('error', new Error('packet too short'));
+    this.emit('error', new Error('packet too short'));
+    return false;
   }
   
-  if (!this._parseFlags(this._list.readUInt8(0))) { return; }
-  this.packet.msgId = this._list.readUInt16BE(1);
+  if (!this._parseFlags(this.buffer.readUInt8(0))) { return true; }
+  this.packet.msgId = this.buffer.readUInt16BE(1);
   
   switch (this.packet.topicIdType) {
     case 'short name':
       if (this.packet.length !== 5) {
-        return this.emit('error', new Error('wrong packet length'));
+        this.emit('error', new Error('wrong packet length'));
+        return false;
       }
-      this.packet.topicName = this._list.toString('utf8', 3, this.packet.length);
+      this.packet.topicName = this.buffer.toString('utf8', 3, this.packet.length);
       break;
     case 'normal':
-      this.packet.topicName = this._list.toString('utf8', 3, this.packet.length);
+      this.packet.topicName = this.buffer.toString('utf8', 3, this.packet.length);
       break;
     case 'pre-defined':
       if (this.packet.length !== 5) {
-        return this.emit('error', new Error('wrong packet length'));
+        this.emit('error', new Error('wrong packet length'));
+        return false;
       }
-      this.packet.topicId = this._list.readUInt16BE(3);
+      this.packet.topicId = this.buffer.readUInt16BE(3);
       break;
   }
+  return true;
 };
+
 Parser.prototype._parseSubAck = function parserParseSubAck() {
   if (this.packet.length !== 6) {
-    return this.emit('error', new Error('wrong packet length'));
+    this.emit('error', new Error('wrong packet length'));
+    return false;
   }
   
-  if (!this._parseFlags(this._list.readUInt8(0))) { return; }
-  this.packet.topicId = this._list.readUInt16BE(1);
-  this.packet.msgId = this._list.readUInt16BE(3);
-  this.packet.returnCode = this._parseReturnCode(this._list.readUInt8(5));
+  if (!this._parseFlags(this.buffer.readUInt8(0))) { return true; }
+  this.packet.topicId = this.buffer.readUInt16BE(1);
+  this.packet.msgId = this.buffer.readUInt16BE(3);
+  this.packet.returnCode = this._parseReturnCode(this.buffer.readUInt8(5));
+  return true;
 };
 
 Parser.prototype._parsePingReq = function parserParsePingReq() {
   if (this.packet.length !== 0) {
-    this.packet.clientId = this._list.toString('utf8', 0, this.packet.length);
+    this.packet.clientId = this.buffer.toString('utf8', 0, this.packet.length);
   }
+  return true;
 };
 
 Parser.prototype._parseDisconnect = function parserParseDisconnect() {
   if (this.packet.length !== 0) {
     if (this.packet.length === 2) {
-      this.packet.duration = this._list.readUInt16BE(0);
+      this.packet.duration = this.buffer.readUInt16BE(0);
     } else  {
       this.emit('error', new Error('wrong packet length'));
+      return false;
     }
   }
+  return true;
 };
 
 Parser.prototype._parseEncapsulatedMsg = function parserParseEncapsulatedMsg() {
@@ -363,9 +372,9 @@ Parser.prototype._parseEncapsulatedMsg = function parserParseEncapsulatedMsg() {
     return false;
   }
   
-  var ctrl = this._list.readUInt8(0);
+  var ctrl = this.buffer.readUInt8(0);
   this.packet.radius = ctrl & constants.RADIUS_MASK;
-  this.packet.wirelessNodeId = this._list.toString('utf8', 1, this.packet.length);
+  this.packet.wirelessNodeId = this.buffer.toString('utf8', 1, this.packet.length);
   
   var header = this._parseHeaderInternal(this.packet.length);
   if (header === null) {
@@ -373,12 +382,13 @@ Parser.prototype._parseEncapsulatedMsg = function parserParseEncapsulatedMsg() {
   }
   if (header.cmdCode === constants.codes['Encapsulated message']) {
     this.emit('error', new Error('nested encapsulated message is not supported'));
+    return false;
   }
-  if (this._list.length < (this.packet.length + header.length + header.headerLength)) {
+  if (this.buffer.length < (this.packet.length + header.length + header.headerLength)) {
     return false;
   }
   this.packet.length = this.packet.length + header.length + header.headerLength;
-  this.packet.encapsulated = this._list.slice(this.packet.length, this.packet.length);
+  this.packet.encapsulated = this.buffer.slice(this.packet.length, this.packet.length);
   
   return true;
 };
